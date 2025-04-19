@@ -14,10 +14,8 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import java.time.Duration;
+import java.util.*;
 
 // TODO: add more checks for edge cases
 // TODO 2: check all methods that work with pack names -- they need to use the kafka topic convention checker
@@ -63,7 +61,7 @@ public class Manager {
                     \nMenu:
                     1. Show pack names
                     2. Select pack to edit
-                    3. Create new pack from another -- not implemented
+                    3. Create new pack by file
                     4. Search for a word
                     5. Rename a pack -- not implemented
                     6. Select a pack to print contents
@@ -73,11 +71,11 @@ public class Manager {
             switch (reader.readLine()) {
                 case "1" -> listPacks();
                 case "2" -> editFileMenu();
-                case "3" -> {
+                case "3" -> createPackFromFile();
+                case "4" -> searchWord();
+                case "5" -> {
                     return;
                 }
-                case "4" -> searchWord();
-                case "5" -> {return;}
                 case "6" -> printPack();
                 case "7" -> {
                     manager.close();
@@ -150,7 +148,7 @@ public class Manager {
                 System.out.println("Word already inside the pack");
                 return;
             }
-            words.remove(word);
+            words.add(word);
             producer.send(new ProducerRecord<>(topic, word, word));
             producer.flush();
             System.out.println("Word added");
@@ -162,7 +160,6 @@ public class Manager {
         System.out.print("Enter word to delete: ");
         String word = reader.readLine();
         if (words.remove(word)) {
-            words.remove(word);
             producer.send(new ProducerRecord<>(topic, word, null));
             producer.flush();
             System.out.println("Word removed");
@@ -197,6 +194,9 @@ public class Manager {
             return false;
         }
         if (name.equals(".") || name.equals("..")) {
+            return false;
+        }
+        if (name.length() > 249) {
             return false;
         }
         return name.matches("[a-zA-Z0-9._-]+");
@@ -249,6 +249,7 @@ public class Manager {
     }
 
     public void loadPackTopics() {
+        packs = new HashMap<>();
         Map<String, List<PartitionInfo>> topicMap = consumer.listTopics();
         for (String topic : topicMap.keySet()) {
             if (topic.startsWith("pack-")) {
@@ -306,21 +307,36 @@ public class Manager {
         return words;
     }
 
-//    public void sendWordsFromFile(String filePath) {
-//        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
-//            logger.info("Starting to send words from file " + filePath + " to topic " + topic);
-//            String line;
-//            while ((line = reader.readLine()) != null) {
-//                String word = line.trim();
-//                if (!word.isEmpty()) {
-//                    producer.send(new ProducerRecord<>(topic, word, word));
-//                }
-//            }
-//            logger.info("Successfully sent words to topic.");
-//        } catch (IOException e) {
-//            logger.error("Failed inside sendWordsFromFile: ", e);
-//        }
-//    }
+    public static void createPackFromFile() throws IOException {
+        System.out.print("Enter file path: ");
+        String filePath = reader.readLine();
+
+        Path source = Paths.get(filePath);
+        if (!Files.exists(source)) {
+            System.out.println("File not found");
+            return;
+        }
+
+        System.out.print("Enter new pack name: ");
+        String topic;
+        while (true) {
+            topic = reader.readLine();
+            if (isValidKafkaTopicName(topic)) {
+                break;
+            }
+            System.out.println("Invalid pack name. Please try again");
+            System.out.println("Format: \"pack-<name>\"");
+        }
+
+        List<String> words = Files.readAllLines(source);
+
+        logger.info("Starting to send words from file " + filePath + " to topic " + topic);
+        for (String word : words) {
+            producer.send(new ProducerRecord<>(topic, word, word));
+        }
+        producer.flush();
+        logger.info("Successfully sent words to topic.");
+    }
 
     public void close() {
         consumer.close();
