@@ -31,7 +31,6 @@ public class Manager {
             producerProps.load(propsFile);
         } catch (IOException e) {
             log.error("Failed to load producer properties file: " + e);
-            throw new RuntimeException();
         }
         // TODO: should I wrap this into a try statement too?
         producer = new KafkaProducer<>(producerProps);
@@ -41,7 +40,6 @@ public class Manager {
             consumerProps.load(propsFile);
         } catch (IOException e) {
             log.error("Failed to load producer properties file: " + e);
-            throw new RuntimeException();
         }
         consumer = new KafkaConsumer<>(consumerProps);
 
