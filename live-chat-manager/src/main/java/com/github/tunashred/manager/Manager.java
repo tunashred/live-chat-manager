@@ -28,7 +28,8 @@ public class Manager {
 
     public Manager() {
         Properties producerProps = new Properties();
-        try (InputStream propsFile = new FileInputStream("src/main/resources/producer.properties")) {
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+        try (InputStream propsFile = classLoader.getResourceAsStream("producer.properties")) {
             producerProps.load(propsFile);
             producer = new KafkaProducer<>(producerProps);
         } catch (IOException e) {
@@ -36,7 +37,7 @@ public class Manager {
         }
 
         Properties consumerProps = new Properties();
-        try (InputStream propsFile = new FileInputStream("src/main/resources/consumer.properties")) {
+        try (InputStream propsFile = classLoader.getResourceAsStream("consumer.properties")) {
             consumerProps.load(propsFile);
             consumer = new KafkaConsumer<>(consumerProps);
         } catch (IOException e) {
@@ -44,7 +45,7 @@ public class Manager {
         }
 
         loadPackTopics();
-        log.info("Manager ready.");
+        log.info("Manager ready");
     }
 
     public static void main(String[] args) throws IOException {
