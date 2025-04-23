@@ -21,6 +21,7 @@
         <project.resources.sourceEncoding>${project.encoding}</project.resources.sourceEncoding>
         <archetype.encoding>${project.encoding}</archetype.encoding>
 
+        <com.github.tunashred.admin.version>1.0-SNAPSHOT</com.github.tunashred.admin.version>
         <kafka.version>3.7.1</kafka.version>
         <lombok.version>1.18.36</lombok.version>
         <jackson.version>2.16.1</jackson.version>
@@ -28,6 +29,12 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.github.tunashred</groupId>
+            <artifactId>live-chat-admin</artifactId>
+            <version>${com.github.tunashred.admin.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.kafka</groupId>
             <artifactId>kafka-clients</artifactId>

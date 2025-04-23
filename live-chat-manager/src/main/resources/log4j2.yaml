@@ -97,5 +97,8 @@ Configuration:
       - name: com.github.tunashred.manager
         level: "info"
 
+      - name: com.github.tunashred.admin
+        level: "info"
+
       - name: org.apache.kafka
         level: "warn"

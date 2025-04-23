@@ -1,5 +1,6 @@
 package com.github.tunashred.manager;
 
+import com.github.tunashred.admin.TopicCreator;
 import lombok.Data;
 import lombok.extern.log4j.Log4j2;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -82,10 +83,10 @@ public class Manager {
     }
 
     private static void switchPackTopic(String topic) {
+        log.info("Seek to beginning of topic '" + topic + "'");
         TopicPartition topicPartition = new TopicPartition(topic, 0);
         consumer.assign(List.of(topicPartition));
         consumer.seekToBeginning(List.of(topicPartition));
-        log.info("Seeked to beginning of topic '" + topic + "'");
     }
 
     public static void listPacks() {
@@ -115,7 +116,7 @@ public class Manager {
                     1. Add single word
                     2. Add words from file
                     3. Delete a single word
-                    4. Delete the pack -- just deletes the words, not the topic itself
+                    4. Delete the pack
                     5. Download pack
                     6. Back
                     """);
@@ -124,7 +125,10 @@ public class Manager {
                 case "1" -> addWord(topic);
                 case "2" -> addWords(topic);
                 case "3" -> deleteWord(topic);
-                case "4" -> deletePack(topic);
+                case "4" -> {
+                    deletePack(topic);
+                    return;
+                }
                 case "5" -> downloadPack(topic);
                 case "6" -> {
                     return;
@@ -165,6 +169,7 @@ public class Manager {
             producer.send(new ProducerRecord<>(topic, word, true));
         }
         producer.flush();
+        System.out.println("Words sent to topic");
     }
 
     public static void deleteWord(String topic) throws IOException {
@@ -172,7 +177,7 @@ public class Manager {
         System.out.print("Enter word to delete: ");
         String word = reader.readLine();
         if (words.remove(word)) {
-            producer.send(new ProducerRecord<>(topic, word, false));
+            producer.send(new ProducerRecord<>(topic, word, null));
             producer.flush();
             System.out.println("Word removed");
         } else {
@@ -183,10 +188,11 @@ public class Manager {
     public static void deletePack(String topic) {
         List<String> words = packs.get(topic);
         for (String word : words) {
-            producer.send(new ProducerRecord<>(topic, word, false));
+            producer.send(new ProducerRecord<>(topic, word, null));
         }
         producer.flush();
         packs.remove(topic);
+        TopicCreator.deleteTopic(topic);
         System.out.println("Pack deleted");
     }
 
@@ -199,19 +205,6 @@ public class Manager {
                 System.out.println("Word found in: " + entry.getKey());
             }
         }
-    }
-
-    public static boolean isValidKafkaTopicName(String name) {
-        if (name == null || name.isEmpty()) {
-            return false;
-        }
-        if (name.equals(".") || name.equals("..")) {
-            return false;
-        }
-        if (name.length() > 249) {
-            return false;
-        }
-        return name.matches("[a-zA-Z0-9._-]+");
     }
 
     public static void printPack() throws IOException {
@@ -230,8 +223,6 @@ public class Manager {
         packs.get(topic).forEach(System.out::println);
     }
 
-    // TODO: atm this works because the brokers allow it
-    // the admin api repo should be taking care of this
     public static void createPackFromFile() throws IOException {
         System.out.print("Enter file path: ");
         String filePath = reader.readLine();
@@ -243,14 +234,11 @@ public class Manager {
         }
 
         System.out.print("Enter new pack name: ");
-        String topic;
-        while (true) {
-            topic = reader.readLine();
-            if (isValidKafkaTopicName(topic)) {
-                break;
-            }
-            System.out.println("Invalid pack name. Please try again");
-            System.out.println("Format: \"pack-<name>\"");
+        String topic = reader.readLine();
+        topic = TopicCreator.createPackTopic(topic);
+        if (topic == null) {
+            System.out.println("Invalid topic name or topic already exists");
+            return;
         }
 
         List<String> words = Files.readAllLines(source);
@@ -261,9 +249,10 @@ public class Manager {
         }
         producer.flush();
         log.info("Successfully sent words to topic.");
+        loadPackTopics();
     }
 
-    public void loadPackTopics() {
+    public static void loadPackTopics() {
         packs = new HashMap<>();
         Map<String, List<PartitionInfo>> topicMap = consumer.listTopics();
         for (String topic : topicMap.keySet()) {
@@ -274,7 +263,7 @@ public class Manager {
         }
     }
 
-    private List<String> readPackTopic(String topic) {
+    private static List<String> readPackTopic(String topic) {
         switchPackTopic(topic);
 
         List<String> words = new ArrayList<>();
