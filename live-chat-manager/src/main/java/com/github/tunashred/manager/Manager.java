@@ -10,13 +10,15 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 
-// TODO: add more checks for edge cases
 @Data
 @Log4j2
 public class Manager {
@@ -48,41 +50,6 @@ public class Manager {
         log.info("Manager ready");
     }
 
-    public static void main(String[] args) throws IOException {
-        Files.createDirectories(packsDir);
-        Manager manager = new Manager();
-
-        while (true) {
-            System.out.println("""
-                    \nMenu:
-                    1. Show pack names
-                    2. Select pack to edit
-                    3. Create new pack by file
-                    4. Search for a word
-                    5. Rename a pack -- not implemented
-                    6. Select a pack to print contents
-                    7. Exit
-                    """);
-
-            switch (reader.readLine()) {
-                case "1" -> listPacks();
-                case "2" -> editFileMenu();
-                case "3" -> createPackFromFile();
-                case "4" -> searchWord();
-                case "5" -> {
-                    return;
-                }
-                case "6" -> printPack();
-                case "7" -> {
-                    manager.close();
-                    log.info("Job's done");
-                    return;
-                }
-                default -> System.out.println("Invalid option.");
-            }
-        }
-    }
-
     private static void switchPackTopic(String topic) {
         log.info("Seek to beginning of topic '" + topic + "'");
         TopicPartition topicPartition = new TopicPartition(topic, 0);
@@ -90,79 +57,34 @@ public class Manager {
         consumer.seekToBeginning(List.of(topicPartition));
     }
 
-    public static void listPacks() {
+    public static List<String> listPacks() {
         System.out.println("Available packs: ");
+        List<String> list = new ArrayList<>();
         for (String packName : packs.keySet()) {
+            list.add(packName);
             System.out.println(packName);
         }
+        return list;
     }
 
-    public static void editFileMenu() throws IOException {
-        listPacks();
-        System.out.println("Enter pack name to edit: ");
-        String topic;
-        while (true) {
-            topic = reader.readLine();
-
-            if (packs.containsKey(topic)) {
-                break;
-            }
-            System.out.println("Topic pack name is incorrect, try again");
+    public static Boolean addWord(String topic, String word) throws IOException {
+        List<String> words = packs.get(topic);
+        if (words.contains(word)) {
+            log.error("Word already inside the pack");
+            return false;
         }
-        switchPackTopic(topic);
-
-        while (true) {
-            System.out.println("""
-                    \nEditing Menu:
-                    1. Add single word
-                    2. Add words from file
-                    3. Delete a single word
-                    4. Delete the pack
-                    5. Download pack
-                    6. Back
-                    """);
-
-            switch (reader.readLine()) {
-                case "1" -> addWord(topic);
-                case "2" -> addWords(topic);
-                case "3" -> deleteWord(topic);
-                case "4" -> {
-                    deletePack(topic);
-                    return;
-                }
-                case "5" -> downloadPack(topic);
-                case "6" -> {
-                    return;
-                }
-                default -> System.out.println("Invalid option.");
-            }
-        }
+        words.add(word);
+        producer.send(new ProducerRecord<>(topic, word, true));
+        producer.flush();
+        log.info("Word added");
+        return true;
     }
 
-    public static void addWord(String topic) throws IOException {
-        System.out.print("Enter word or expression to add: ");
-        String word = reader.readLine();
-        if (!word.isEmpty()) {
-            List<String> words = packs.get(topic);
-            if (words.contains(word)) {
-                System.out.println("Word already inside the pack");
-                return;
-            }
-            words.add(word);
-            producer.send(new ProducerRecord<>(topic, word, true));
-            producer.flush();
-            System.out.println("Word added");
-        }
-    }
-
-    public static void addWords(String topic) throws IOException {
-        System.out.println("Enter file path: ");
-        String filePath = reader.readLine();
-
+    public static Boolean addWords(String filePath, String topic) throws IOException {
         Path file = Paths.get(filePath);
         if (!Files.exists(file)) {
-            System.out.println("File not found");
-            return;
+            log.error("File not found");
+            return false;
         }
 
         List<String> words = Files.readAllLines(file);
@@ -170,76 +92,67 @@ public class Manager {
             producer.send(new ProducerRecord<>(topic, word, true));
         }
         producer.flush();
-        System.out.println("Words sent to topic");
+        log.info("Words sent to topic");
+        return true;
     }
 
-    public static void deleteWord(String topic) throws IOException {
+    public static Boolean deleteWord(String topic, String word) throws IOException {
         List<String> words = packs.get(topic);
-        System.out.print("Enter word to delete: ");
-        String word = reader.readLine();
         if (words.remove(word)) {
             producer.send(new ProducerRecord<>(topic, word, null));
             producer.flush();
-            System.out.println("Word removed");
-        } else {
-            System.out.println("Word not found");
+            log.info("Word removed");
+            return true;
         }
+        log.warn("Word not found");
+        return false;
     }
 
-    public static void deletePack(String topic) {
+    public static Boolean deletePack(String topic) {
         List<String> words = packs.get(topic);
         for (String word : words) {
             producer.send(new ProducerRecord<>(topic, word, null));
         }
         producer.flush();
         packs.remove(topic);
-        TopicCreator.deleteTopic(topic);
-        System.out.println("Pack deleted");
+        Boolean success = TopicCreator.deleteTopic(topic);
+        if (success) {
+            log.info("Pack deleted");
+            return true;
+        }
+        log.error("Unable to delete pack + '" + topic + "'");
+        return false;
     }
 
-    public static void searchWord() throws IOException {
-        System.out.print("Enter a word to search: ");
-        String searchedWord = reader.readLine();
-
+    public static List<String> searchWord(String word) throws IOException {
+        List<String> matches = new ArrayList<>();
         for (var entry : packs.entrySet()) {
-            if (entry.getValue().contains(searchedWord)) {
-                System.out.println("Word found in: " + entry.getKey());
+            if (entry.getValue().contains(word)) {
+                matches.add("Word found in: " + entry.getKey());
             }
         }
+        return matches;
     }
 
-    public static void printPack() throws IOException {
-        System.out.println("Enter pack name: ");
-        String topic;
-        while (true) {
-            topic = reader.readLine();
-
-            if (packs.containsKey(topic)) {
-                break;
-            }
-            System.out.println("Topic pack name is incorrect, try again");
+    public static List<String> getPack(String topic) throws IOException {
+        if (!packs.containsKey(topic)) {
+            log.warn("Pack does not exist");
+            return Collections.emptyList();
         }
-
-        System.out.println(topic + " contents: ");
-        packs.get(topic).forEach(System.out::println);
+        return packs.get(topic);
     }
 
-    public static void createPackFromFile() throws IOException {
-        System.out.print("Enter file path: ");
-        String filePath = reader.readLine();
-
+    public static Boolean createPackFromFile(String filePath, String packName) throws IOException {
         Path source = Paths.get(filePath);
         if (!Files.exists(source)) {
-            System.out.println("File not found");
-            return;
+            log.error("File not found");
+            return false;
         }
 
-        System.out.print("Enter new pack name: ");
-        String topic = reader.readLine();
-        topic = TopicCreator.createPackTopic(topic);
+        String topic = TopicCreator.createPackTopic(packName);
         if (topic == null) {
-            System.out.println("Invalid topic name or topic already exists");
-            return;
+            log.error("Invalid topic name or topic already exists");
+            return false;
         }
 
         List<String> words = Files.readAllLines(source);
@@ -251,6 +164,7 @@ public class Manager {
         producer.flush();
         log.info("Successfully sent words to topic.");
         loadPackTopics();
+        return true;
     }
 
     public static void loadPackTopics() {
@@ -286,18 +200,17 @@ public class Manager {
         return words;
     }
 
-    private static void downloadPack(String topic) throws IOException {
-        System.out.print("Add path for file: ");
-        String destPath = reader.readLine();
+    private static Boolean downloadPack(String topic, String destPath) throws IOException {
         Path path = Paths.get(destPath);
         if (Files.isRegularFile(path) || Files.exists(path)) {
-            System.out.println("File already exists");
-            return;
+            log.error("File already exists");
+            return false;
         }
 
         List<String> pack = packs.get(topic);
         Files.write(path, pack);
         System.out.println("Pack downloaded.");
+        return true;
     }
 
     public void close() {
