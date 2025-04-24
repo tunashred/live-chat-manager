@@ -1,5 +1,6 @@
 package com.github.tunashred.manager;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.github.tunashred.admin.TopicCreator;
 import com.github.tunashred.streamer.Streamer;
 import lombok.AccessLevel;
@@ -127,7 +128,7 @@ public class Manager {
     }
 
     // TODO: make sure the pack is removed from the preferences topic
-    public static boolean deletePack(String topicName) {
+    public static boolean deletePack(String topicName) throws JsonProcessingException {
         String topic = packanizeTopicName(topicName);
         if (!topicExists(topic)) {
             log.error("Pack named '{}' does not exist", topicName);
@@ -146,14 +147,19 @@ public class Manager {
             return false;
         }
 
-//        success = this.streamer.removePreference()
-
-        if (success) {
-            log.info("Pack {} deleted", topicName);
-            return true;
+        Map<String, List<String>> streamerPreferences = Streamer.getPreferencesMap();
+        if (streamerPreferences.isEmpty()) {
+            log.warn("Streamer has no preferences");
+            return false;
         }
-
-        return false;
+        for (var entry : streamerPreferences.entrySet()) {
+            if (entry.getValue().contains(topic)) {
+                Streamer.removePreference(entry.getKey(), topic);
+                log.trace("Removed pack '{}' from streamer '{}' preferences", topicName, entry.getKey());
+            }
+        }
+        log.info("Pack {} deleted", topicName);
+        return true;
     }
 
     public static List<String> searchWord(String word) throws IOException {
