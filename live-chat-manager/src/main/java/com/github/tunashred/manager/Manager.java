@@ -1,6 +1,7 @@
 package com.github.tunashred.manager;
 
 import com.github.tunashred.admin.TopicCreator;
+import com.github.tunashred.streamer.Streamer;
 import lombok.AccessLevel;
 import lombok.Data;
 import lombok.experimental.FieldDefaults;
@@ -26,11 +27,13 @@ import java.util.*;
 @Log4j2
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class Manager {
+    static String PREFERENCES_TOPIC = "streamer-preferences";
     static Map<String, List<String>> packs;
     static KafkaProducer<String, Boolean> producer = null;
     static KafkaConsumer<String, Boolean> consumer = null;
+    Streamer streamer;
 
-    public Manager() {
+    public Manager(Streamer streamer) {
         Properties producerProps = new Properties();
         try (InputStream propsFile = Manager.class.getClassLoader().getResourceAsStream("manager-producer.properties")) {
             if (propsFile == null) {
@@ -54,6 +57,8 @@ public class Manager {
         }
 
         loadPackTopics();
+
+        this.streamer = streamer;
         log.info("Manager ready");
     }
 
@@ -121,6 +126,7 @@ public class Manager {
         return false;
     }
 
+    // TODO: make sure the pack is removed from the preferences topic
     public static boolean deletePack(String topicName) {
         String topic = packanizeTopicName(topicName);
         if (!topicExists(topic)) {
@@ -135,11 +141,18 @@ public class Manager {
         producer.flush();
         packs.remove(topic);
         boolean success = TopicCreator.deletePackTopic(topic);
+        if (!success) {
+            log.error("Unable to delete pack + '{}'", topic);
+            return false;
+        }
+
+//        success = this.streamer.removePreference()
+
         if (success) {
             log.info("Pack {} deleted", topicName);
             return true;
         }
-        log.error("Unable to delete pack + '{}'", topic);
+
         return false;
     }
 
@@ -196,6 +209,7 @@ public class Manager {
     }
 
     public static void loadPackTopics() {
+        log.info("Loading pack topics");
         packs = new HashMap<>();
         Map<String, List<PartitionInfo>> topicMap = consumer.listTopics();
         for (String topic : topicMap.keySet()) {
@@ -262,5 +276,6 @@ public class Manager {
     public void close() {
         consumer.close();
         producer.close();
+        streamer.close();
     }
 }

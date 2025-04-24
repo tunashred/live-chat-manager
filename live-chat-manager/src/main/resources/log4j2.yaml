@@ -1,7 +1,7 @@
 # If you ever want to override this configuration fully, this is the order in which Log4j2 configures itself:
 # https://logging.apache.org/log4j/2.x/manual/configuration.html#automatic-configuration
 Configuration:
-  name: "Moderator logging"
+  name: "Manager logging"
 
   # This is the log level for internal Log4j2 components
   status: info
