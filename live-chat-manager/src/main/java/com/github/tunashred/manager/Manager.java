@@ -1,7 +1,9 @@
 package com.github.tunashred.manager;
 
 import com.github.tunashred.admin.TopicCreator;
+import lombok.AccessLevel;
 import lombok.Data;
+import lombok.experimental.FieldDefaults;
 import lombok.extern.log4j.Log4j2;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -17,21 +19,23 @@ import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.*;
 
 @Data
 @Log4j2
+@FieldDefaults(level = AccessLevel.PRIVATE)
 public class Manager {
-    static final Path packsDir = Paths.get("packs");
-    private static final BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
-    private static Map<String, List<String>> packs;
-    private static KafkaProducer<String, Boolean> producer = null;
-    private static KafkaConsumer<String, Boolean> consumer = null;
+    static Map<String, List<String>> packs;
+    static KafkaProducer<String, Boolean> producer = null;
+    static KafkaConsumer<String, Boolean> consumer = null;
 
     public Manager() {
         Properties producerProps = new Properties();
-        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        try (InputStream propsFile = classLoader.getResourceAsStream("producer.properties")) {
+        try (InputStream propsFile = Manager.class.getClassLoader().getResourceAsStream("manager-producer.properties")) {
+            if (propsFile == null) {
+                log.error("Cannot find manager-producer.properties in classpath");
+            }
             producerProps.load(propsFile);
             producer = new KafkaProducer<>(producerProps);
         } catch (IOException e) {
@@ -39,7 +43,10 @@ public class Manager {
         }
 
         Properties consumerProps = new Properties();
-        try (InputStream propsFile = classLoader.getResourceAsStream("consumer.properties")) {
+        try (InputStream propsFile = Manager.class.getClassLoader().getResourceAsStream("manager-consumer.properties")) {
+            if (propsFile == null) {
+                log.error("Cannot find manager-consumer.properties in classpath");
+            }
             consumerProps.load(propsFile);
             consumer = new KafkaConsumer<>(consumerProps);
         } catch (IOException e) {
@@ -51,23 +58,18 @@ public class Manager {
     }
 
     private static void switchPackTopic(String topic) {
-        log.info("Seek to beginning of topic '" + topic + "'");
+        log.info("Seek to beginning of topic '{}'", topic);
         TopicPartition topicPartition = new TopicPartition(topic, 0);
         consumer.assign(List.of(topicPartition));
         consumer.seekToBeginning(List.of(topicPartition));
     }
 
     public static List<String> listPacks() {
-        System.out.println("Available packs: ");
-        List<String> list = new ArrayList<>();
-        for (String packName : packs.keySet()) {
-            list.add(packName);
-            System.out.println(packName);
-        }
-        return list;
+        return new ArrayList<>(packs.keySet());
     }
 
-    public static Boolean addWord(String topic, String word) throws IOException {
+    public static boolean addWord(String topicName, String word) {
+        String topic = packanizeTopicName(topicName);
         List<String> words = packs.get(topic);
         if (words.contains(word)) {
             log.error("Word already inside the pack");
@@ -80,15 +82,25 @@ public class Manager {
         return true;
     }
 
-    public static Boolean addWords(String filePath, String topic) throws IOException {
-        Path file = Paths.get(filePath);
-        if (!Files.exists(file)) {
-            log.error("File not found");
+    public static boolean addWords(InputStream inputStream, String topicName) throws IOException {
+        String topic = packanizeTopicName(topicName);
+        log.info("Appending words to existing pack topic '{}'", topic);
+
+        List<String> words;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+            words = reader.lines().toList();
+        }
+        if (words.isEmpty()) {
+            log.error("File contents are empty");
             return false;
         }
 
-        List<String> words = Files.readAllLines(file);
         for (String word : words) {
+            if (packs.get(topic).contains(word)) {
+                log.warn("Pack '{}' already contains word ''", topicName);
+                continue;
+            }
+            log.trace("Sending word '{}' to topic '{}'", word, topic);
             producer.send(new ProducerRecord<>(topic, word, true));
         }
         producer.flush();
@@ -96,7 +108,8 @@ public class Manager {
         return true;
     }
 
-    public static Boolean deleteWord(String topic, String word) throws IOException {
+    public static boolean deleteWord(String topicName, String word) {
+        String topic = packanizeTopicName(topicName);
         List<String> words = packs.get(topic);
         if (words.remove(word)) {
             producer.send(new ProducerRecord<>(topic, word, null));
@@ -108,19 +121,25 @@ public class Manager {
         return false;
     }
 
-    public static Boolean deletePack(String topic) {
+    public static boolean deletePack(String topicName) {
+        String topic = packanizeTopicName(topicName);
+        if (!topicExists(topic)) {
+            log.error("Pack named '{}' does not exist", topicName);
+            return false;
+        }
+        log.info("Tombstoning all pack '{}' records", topicName);
         List<String> words = packs.get(topic);
         for (String word : words) {
             producer.send(new ProducerRecord<>(topic, word, null));
         }
         producer.flush();
         packs.remove(topic);
-        Boolean success = TopicCreator.deleteTopic(topic);
+        boolean success = TopicCreator.deletePackTopic(topic);
         if (success) {
-            log.info("Pack deleted");
+            log.info("Pack {} deleted", topicName);
             return true;
         }
-        log.error("Unable to delete pack + '" + topic + "'");
+        log.error("Unable to delete pack + '{}'", topic);
         return false;
     }
 
@@ -134,7 +153,8 @@ public class Manager {
         return matches;
     }
 
-    public static List<String> getPack(String topic) throws IOException {
+    public static List<String> getPack(String topicName) {
+        String topic = packanizeTopicName(topicName);
         if (!packs.containsKey(topic)) {
             log.warn("Pack does not exist");
             return Collections.emptyList();
@@ -142,22 +162,30 @@ public class Manager {
         return packs.get(topic);
     }
 
-    public static Boolean createPackFromFile(String filePath, String packName) throws IOException {
-        Path source = Paths.get(filePath);
-        if (!Files.exists(source)) {
-            log.error("File not found");
+    public static boolean createPackFromFile(InputStream inputStream, String packName) throws IOException {
+        String topic = packanizeTopicName(packName);
+        if (topicExists(topic)) {
+            log.error("Topic named '{}' already exists", packName);
+            return false;
+        }
+        log.info("Creating new pack topic from file contents provided");
+        List<String> words;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+            words = reader.lines().toList();
+        }
+        if (words.isEmpty()) {
+            log.error("File contents are empty");
             return false;
         }
 
-        String topic = TopicCreator.createPackTopic(packName);
+        log.info("Creating topic with Admin API");
+        topic = TopicCreator.createPackTopic(topic);
         if (topic == null) {
             log.error("Invalid topic name or topic already exists");
             return false;
         }
 
-        List<String> words = Files.readAllLines(source);
-
-        log.info("Starting to send words from file " + filePath + " to topic " + topic);
+        log.info("Starting to send words to topic {}", packName);
         for (String word : words) {
             producer.send(new ProducerRecord<>(topic, word, true));
         }
@@ -178,7 +206,8 @@ public class Manager {
         }
     }
 
-    private static List<String> readPackTopic(String topic) {
+    private static List<String> readPackTopic(String topicName) {
+        String topic = packanizeTopicName(topicName);
         switchPackTopic(topic);
 
         List<String> words = new ArrayList<>();
@@ -186,7 +215,7 @@ public class Manager {
 
         while (System.currentTimeMillis() - lastPollTime < 1000) {
             log.trace("Polling for pack topic records");
-            ConsumerRecords<String, Boolean> records = consumer.poll(500);
+            ConsumerRecords<String, Boolean> records = consumer.poll(Duration.ofMillis(500));
             if (!records.isEmpty()) {
                 lastPollTime = System.currentTimeMillis();
             }
@@ -200,7 +229,12 @@ public class Manager {
         return words;
     }
 
-    private static Boolean downloadPack(String topic, String destPath) throws IOException {
+    private static boolean downloadPack(String topicName, String destPath) throws IOException {
+        String topic = packanizeTopicName(topicName);
+        if (!topicExists(topic)) {
+            log.error("Topic named '{}' does not exist", topicName);
+            return false;
+        }
         Path path = Paths.get(destPath);
         if (Files.isRegularFile(path) || Files.exists(path)) {
             log.error("File already exists");
@@ -209,8 +243,20 @@ public class Manager {
 
         List<String> pack = packs.get(topic);
         Files.write(path, pack);
-        System.out.println("Pack downloaded.");
+        log.info("Pack downloaded");
         return true;
+    }
+
+    private static String packanizeTopicName(String topicName) {
+        if (!topicName.startsWith("pack-")) {
+            return "pack-" + topicName;
+        }
+        return topicName;
+    }
+
+    private static boolean topicExists(String topic) {
+        Map<String, List<PartitionInfo>> topicMap = consumer.listTopics();
+        return topicMap.containsKey(topic);
     }
 
     public void close() {
