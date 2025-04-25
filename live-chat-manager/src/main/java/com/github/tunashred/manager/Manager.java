@@ -35,6 +35,7 @@ public class Manager {
     Streamer streamer;
 
     public Manager(Streamer streamer) {
+        log.trace("Loading producer properties");
         Properties producerProps = new Properties();
         try (InputStream propsFile = Manager.class.getClassLoader().getResourceAsStream("manager-producer.properties")) {
             if (propsFile == null) {
@@ -46,6 +47,7 @@ public class Manager {
             log.error("Failed to load producer properties file: ", e);
         }
 
+        log.trace("Loading consumer properties");
         Properties consumerProps = new Properties();
         try (InputStream propsFile = Manager.class.getClassLoader().getResourceAsStream("manager-consumer.properties")) {
             if (propsFile == null) {
@@ -63,103 +65,8 @@ public class Manager {
         log.info("Manager ready");
     }
 
-    private static void switchPackTopic(String topic) {
-        log.info("Seek to beginning of topic '{}'", topic);
-        TopicPartition topicPartition = new TopicPartition(topic, 0);
-        consumer.assign(List.of(topicPartition));
-        consumer.seekToBeginning(List.of(topicPartition));
-    }
-
     public static List<String> listPacks() {
         return new ArrayList<>(packs.keySet());
-    }
-
-    public static boolean addWord(String topicName, String word) {
-        String topic = packanizeTopicName(topicName);
-        List<String> words = packs.get(topic);
-        if (words.contains(word)) {
-            log.error("Word already inside the pack");
-            return false;
-        }
-        words.add(word);
-        producer.send(new ProducerRecord<>(topic, word, true));
-        producer.flush();
-        log.info("Word added");
-        return true;
-    }
-
-    public static boolean addWords(InputStream inputStream, String topicName) throws IOException {
-        String topic = packanizeTopicName(topicName);
-        log.info("Appending words to existing pack topic '{}'", topic);
-
-        List<String> words;
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
-            words = reader.lines().toList();
-        }
-        if (words.isEmpty()) {
-            log.error("File contents are empty");
-            return false;
-        }
-
-        for (String word : words) {
-            if (packs.get(topic).contains(word)) {
-                log.warn("Pack '{}' already contains word ''", topicName);
-                continue;
-            }
-            log.trace("Sending word '{}' to topic '{}'", word, topic);
-            producer.send(new ProducerRecord<>(topic, word, true));
-        }
-        producer.flush();
-        log.info("Words sent to topic");
-        return true;
-    }
-
-    public static boolean deleteWord(String topicName, String word) {
-        String topic = packanizeTopicName(topicName);
-        List<String> words = packs.get(topic);
-        if (words.remove(word)) {
-            producer.send(new ProducerRecord<>(topic, word, null));
-            producer.flush();
-            log.info("Word removed");
-            return true;
-        }
-        log.warn("Word not found");
-        return false;
-    }
-
-    // TODO: make sure the pack is removed from the preferences topic
-    public static boolean deletePack(String topicName) throws JsonProcessingException {
-        String topic = packanizeTopicName(topicName);
-        if (!topicExists(topic)) {
-            log.error("Pack named '{}' does not exist", topicName);
-            return false;
-        }
-        log.info("Tombstoning all pack '{}' records", topicName);
-        List<String> words = packs.get(topic);
-        for (String word : words) {
-            producer.send(new ProducerRecord<>(topic, word, null));
-        }
-        producer.flush();
-        packs.remove(topic);
-        boolean success = TopicCreator.deletePackTopic(topic);
-        if (!success) {
-            log.error("Unable to delete pack + '{}'", topic);
-            return false;
-        }
-
-        Map<String, List<String>> streamerPreferences = Streamer.getPreferencesMap();
-        if (streamerPreferences.isEmpty()) {
-            log.warn("Streamer has no preferences");
-            return false;
-        }
-        for (var entry : streamerPreferences.entrySet()) {
-            if (entry.getValue().contains(topic)) {
-                Streamer.removePreference(entry.getKey(), topic);
-                log.trace("Removed pack '{}' from streamer '{}' preferences", topicName, entry.getKey());
-            }
-        }
-        log.info("Pack {} deleted", topicName);
-        return true;
     }
 
     public static List<String> searchWord(String word) throws IOException {
@@ -172,19 +79,19 @@ public class Manager {
         return matches;
     }
 
-    public static List<String> getPack(String topicName) {
-        String topic = packanizeTopicName(topicName);
-        if (!packs.containsKey(topic)) {
+    public static List<String> getPack(String topic) {
+        String topicName = packanizeTopicName(topic);
+        if (!packs.containsKey(topicName)) {
             log.warn("Pack does not exist");
             return Collections.emptyList();
         }
-        return packs.get(topic);
+        return packs.get(topicName);
     }
 
-    public static boolean createPackFromFile(InputStream inputStream, String packName) throws IOException {
-        String topic = packanizeTopicName(packName);
+    public static boolean createPackFromFile(InputStream inputStream, String pack) throws IOException {
+        String topic = packanizeTopicName(pack);
         if (topicExists(topic)) {
-            log.error("Topic named '{}' already exists", packName);
+            log.error("Topic named '{}' already exists", pack);
             return false;
         }
         log.info("Creating new pack topic from file contents provided");
@@ -196,15 +103,16 @@ public class Manager {
             log.error("File contents are empty");
             return false;
         }
+        log.trace("List of words added to new pack topic '{}': {}", topic, words);
 
-        log.info("Creating topic with Admin API");
+        log.trace("Creating topic using Admin API");
         topic = TopicCreator.createPackTopic(topic);
         if (topic == null) {
             log.error("Invalid topic name or topic already exists");
             return false;
         }
 
-        log.info("Starting to send words to topic {}", packName);
+        log.trace("Starting to send words to topic {}", pack);
         for (String word : words) {
             producer.send(new ProducerRecord<>(topic, word, true));
         }
@@ -214,7 +122,101 @@ public class Manager {
         return true;
     }
 
-    public static void loadPackTopics() {
+    public static boolean addWord(String topic, String word) {
+        String topicName = packanizeTopicName(topic);
+        List<String> words = packs.get(topicName);
+        if (words.contains(word)) {
+            log.error("Word already inside the pack");
+            return false;
+        }
+        words.add(word);
+        producer.send(new ProducerRecord<>(topicName, word, true));
+        producer.flush();
+        log.info("Word added");
+        return true;
+    }
+
+    public static boolean addWords(InputStream inputStream, String topic) throws IOException {
+        String topicName = packanizeTopicName(topic);
+        log.trace("Appending words to existing pack topic '{}'", topicName);
+
+        List<String> words;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+            words = reader.lines().toList();
+        }
+        if (words.isEmpty()) {
+            log.error("File contents are empty");
+            return false;
+        }
+
+        for (String word : words) {
+            if (packs.get(topicName).contains(word)) {
+                log.warn("Pack '{}' already contains word ''", topicName);
+                continue;
+            }
+            log.trace("Sending word '{}' to topic '{}'", word, topicName);
+            producer.send(new ProducerRecord<>(topic, word, true));
+        }
+        producer.flush();
+        log.info("Words sent to topic '{}'", topicName);
+        return true;
+    }
+
+    public static boolean deleteWord(String topic, String word) {
+        String topicName = packanizeTopicName(topic);
+        List<String> words = packs.get(topicName);
+        if (words.remove(word)) {
+            producer.send(new ProducerRecord<>(topicName, word, null));
+            producer.flush();
+            log.trace("Word '{}' removed from pack topic '{}'", word, topicName);
+            return true;
+        }
+        log.error("Word not found");
+        return false;
+    }
+
+    public static boolean deletePack(String topic) throws JsonProcessingException {
+        String topicName = packanizeTopicName(topic);
+        if (!topicExists(topicName)) {
+            log.error("Pack named '{}' does not exist", topic);
+            return false;
+        }
+        log.info("Tombstoning all pack '{}' records", topic);
+        List<String> words = packs.get(topicName);
+        for (String word : words) {
+            producer.send(new ProducerRecord<>(topicName, word, null));
+        }
+        producer.flush();
+        packs.remove(topicName);
+        boolean success = TopicCreator.deletePackTopic(topicName);
+        if (!success) {
+            log.error("Unable to delete topic pack + '{}'", topicName);
+            return false;
+        }
+
+        Map<String, List<String>> streamerPreferences = Streamer.getPreferencesMap();
+        if (streamerPreferences.isEmpty()) {
+            log.warn("Streamer has no preferences");
+            return false;
+        }
+        for (var entry : streamerPreferences.entrySet()) {
+            if (entry.getValue().contains(topicName)) {
+                Streamer.removePreference(entry.getKey(), topicName);
+                log.trace("Removed pack '{}' from streamer '{}' preferences", topic, entry.getKey());
+            }
+        }
+        log.info("Pack {} deleted", topic);
+        return true;
+    }
+
+    private static void switchPackTopic(String topic) {
+        log.info("Seek to beginning of topic '{}'", topic);
+        TopicPartition topicPartition = new TopicPartition(topic, 0);
+        consumer.assign(List.of(topicPartition));
+        consumer.seekToBeginning(List.of(topicPartition));
+    }
+
+    private static void loadPackTopics() {
         log.info("Loading pack topics");
         packs = new HashMap<>();
         Map<String, List<PartitionInfo>> topicMap = consumer.listTopics();
@@ -226,9 +228,9 @@ public class Manager {
         }
     }
 
-    private static List<String> readPackTopic(String topicName) {
-        String topic = packanizeTopicName(topicName);
-        switchPackTopic(topic);
+    private static List<String> readPackTopic(String topic) {
+        String topicName = packanizeTopicName(topic);
+        switchPackTopic(topicName);
 
         List<String> words = new ArrayList<>();
         long lastPollTime = System.currentTimeMillis();
@@ -243,12 +245,14 @@ public class Manager {
             for (var record : records) {
                 if (record.value() != null) {
                     words.add(record.key());
+                    log.trace("Consumed word '{}' from topic '{}'", record.key(), topicName);
                 }
             }
         }
         return words;
     }
 
+    // still debating if this should exist or not
     private static boolean downloadPack(String topicName, String destPath) throws IOException {
         String topic = packanizeTopicName(topicName);
         if (!topicExists(topic)) {
@@ -267,11 +271,11 @@ public class Manager {
         return true;
     }
 
-    private static String packanizeTopicName(String topicName) {
-        if (!topicName.startsWith("pack-")) {
-            return "pack-" + topicName;
+    private static String packanizeTopicName(String topic) {
+        if (!topic.startsWith("pack-")) {
+            return "pack-" + topic;
         }
-        return topicName;
+        return topic;
     }
 
     private static boolean topicExists(String topic) {
