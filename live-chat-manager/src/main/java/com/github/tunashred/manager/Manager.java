@@ -35,6 +35,18 @@ public class Manager {
     Streamer streamer;
 
     public Manager(Streamer streamer) {
+        // TODO: fix this unhinged rodeo
+        log.trace("Loading security properties");
+        Properties securityProps = new Properties();
+        try (InputStream propsFile = Manager.class.getClassLoader().getResourceAsStream("manager-security.properties")) {
+            if (propsFile == null) {
+                log.error("Cannot find manager-security.properties in classpath");
+            }
+            securityProps.load(propsFile);
+        } catch (IOException e) {
+            log.error("Failed to load producer properties file: ", e);
+        }
+
         log.trace("Loading producer properties");
         Properties producerProps = new Properties();
         try (InputStream propsFile = Manager.class.getClassLoader().getResourceAsStream("manager-producer.properties")) {
@@ -42,6 +54,7 @@ public class Manager {
                 log.error("Cannot find manager-producer.properties in classpath");
             }
             producerProps.load(propsFile);
+            producerProps.putAll(securityProps);
             producer = new KafkaProducer<>(producerProps);
         } catch (IOException e) {
             log.error("Failed to load producer properties file: ", e);
@@ -54,6 +67,7 @@ public class Manager {
                 log.error("Cannot find manager-consumer.properties in classpath");
             }
             consumerProps.load(propsFile);
+            consumerProps.putAll(securityProps);
             consumer = new KafkaConsumer<>(consumerProps);
         } catch (IOException e) {
             log.error("Failed to load producer properties file: ", e);
