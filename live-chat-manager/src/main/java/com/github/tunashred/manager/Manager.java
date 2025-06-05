@@ -163,13 +163,15 @@ public class Manager {
             return false;
         }
 
+        List<String> packWords = packs.get(topicName);
         for (String word : words) {
             if (packs.get(topicName).contains(word)) {
                 log.warn("Pack '{}' already contains word ''", topicName);
                 continue;
             }
             log.trace("Sending word '{}' to topic '{}'", word, topicName);
-            producer.send(new ProducerRecord<>(topic, word, true));
+            producer.send(new ProducerRecord<>(topicName, word, true));
+            packWords.add(word);
         }
         producer.flush();
         log.info("Words sent to topic '{}'", topicName);
